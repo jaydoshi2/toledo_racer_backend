@@ -1,44 +1,39 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Depends, HTTPException, status, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import numpy as np
-from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
-import asyncio
-import socketio
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
+import asyncio
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine
+import models
 from models import Base
-from schemas import UserCreate, User, ModelCreate, Model
-from crud import create_user, get_user, get_models, get_model, create_model
-from auth import authenticate_user, create_access_token, get_current_user
-from datetime import timedelta
- 
-class SimpleModel(nn.Module):
-    def __init__(self):
-        super(SimpleModel, self).__init__()
-        self.fc = nn.Linear(2, 1)
+from schemas import UserCreate, User, DroneModelCreate, DroneModel, DroneModelUpdate
+from crud import create_user, get_user_by_username, create_drone_model, update_drone_model, get_user_models, get_model_by_id
+from typing import List
 
-    def forward(self, x):
-        return torch.sigmoid(self.fc(x))
-
-def generate_data():
-    np.random.seed(42)
-    X = np.random.randn(100, 2)
-    y = (X[:, 0] + X[:, 1] > 0).astype(np.float32)
-    return torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32).reshape(-1, 1)
-
-
+# Create database tables
+models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
+
+
+class SimpleModel(nn.Module):
+            def __init__(self):
+                super(SimpleModel, self).__init__()
+                self.fc = nn.Linear(2, 1)
+        
+            def forward(self, x):
+                return torch.sigmoid(self.fc(x))
+        
+def generate_data():
+            np.random.seed(42)
+            X = np.random.randn(100, 2)
+            y = (X[:, 0] + X[:, 1] > 0).astype(np.float32)
+            return torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32).reshape(-1, 1)
+        
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -49,61 +44,118 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-# API 5: Login
-@app.post("/token")
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = authenticate_user(db, form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=timedelta(minutes=30)
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
-
-# API 5: Signin (User Registration)
+# Create new user
 @app.post("/users/", response_model=User)
 def create_new_user(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = get_user_by_username(db, username=user.username)
-    if db_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    return create_user(db=db, user=user)
+    try:
+        return create_user(db=db, user=user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-# API 1: Store Model Parameters
-@app.post("/models/", response_model=Model)
-def create_new_model(model: ModelCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return create_model(db=db, model=model, user_id=current_user.id)
+# Get user by username
+@app.get("/users/{username}", response_model=User)
+def get_user(username: str, db: Session = Depends(get_db)):
+    db_user = get_user_by_username(db, username=username)
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return db_user
 
-# API 2: Train Model (Placeholder with Epoch Response)
-@app.post("/train/{model_id}")
-async def train_model(model_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    model = get_model(db, model_id)
-    if not model or model.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Model not found or not authorized")
-    # Placeholder: Simulate training and send epoch results
-    return {"message": f"Training started for model {model_id}", "epochs": model.epochs}
+# Create new drone model
+@app.post("/users/{username}/models/", response_model=DroneModel)
+def create_new_drone_model(username: str, model: DroneModelCreate, db: Session = Depends(get_db)):
+    db_user = get_user_by_username(db, username=username)
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return create_drone_model(db=db, user_id=db_user.id, model=model)
 
-# API 3: ROS Video (Placeholder)
-@app.get("/ros/video")
-async def get_ros_video():
-    return {"message": "ROS video streaming not implemented yet"}
+# Update model status and metrics
+@app.put("/models/{model_id}", response_model=DroneModel)
+def update_model(model_id: int, update_data: DroneModelUpdate, db: Session = Depends(get_db)):
+    db_model = update_drone_model(db, model_id=model_id, update_data=update_data)
+    if db_model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    return db_model
 
-# API 4: Retrieve Data of a Specific Model
-@app.get("/models/{model_id}", response_model=Model)
-def read_model(model_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    model = get_model(db, model_id)
-    if not model or model.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Model not found or not authorized")
-    return model
+# Get all models for a user
+@app.get("/users/{username}/models/", response_model=List[DroneModel])
+def get_models(username: str, db: Session = Depends(get_db)):
+    db_user = get_user_by_username(db, username=username)
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return get_user_models(db=db, user_id=db_user.id)
 
-# API 6: Retrieve List of Models for a User
-@app.get("/models/", response_model=list[Model])
-def read_models(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return get_models(db, user_id=current_user.id)
+# Get specific model details
+@app.get("/models/{model_id}", response_model=DroneModel)
+def get_model(model_id: int, db: Session = Depends(get_db)):
+    db_model = get_model_by_id(db, model_id=model_id)
+    if db_model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    return db_model
+
+# WebSocket endpoint for training updates
+# @app.websocket("/ws/train/{model_id}")
+# async def train_model(websocket: WebSocket, model_id: int, db: Session = Depends(get_db)):
+#     await websocket.accept()
+    
+#     try:
+#         # Get model from database
+#         db_model = get_model_by_id(db, model_id)
+#         if not db_model:
+#             await websocket.send_json({"error": "Model not found"})
+#             await websocket.close()
+#             return
+
+#         # Update status to training
+#         update_data = DroneModelUpdate(status="training")
+#         update_drone_model(db, model_id, update_data)
+
+#         # Simulate training
+#         for epoch in range(db_model.training_epochs):
+#             # Simulate training metrics
+#             loss = 1.0 - (epoch / db_model.training_epochs)  # Simulated decreasing loss
+#             accuracy = epoch / db_model.training_epochs  # Simulated increasing accuracy
+            
+#             metrics = {
+#                 "epoch": epoch + 1,
+#                 "total_epochs": db_model.training_epochs,
+#                 "loss": round(loss, 4),
+#                 "accuracy": round(accuracy, 4),
+#                 "progress": round((epoch + 1) / db_model.training_epochs * 100, 1),
+#                 "done": False
+#             }
+            
+#             await websocket.send_json(metrics)
+#             await asyncio.sleep(0.5)  # Simulate training time
+
+#         # Update final status and metrics
+#         final_update = DroneModelUpdate(
+#             status="finished",
+#             train_loss=0.1,  # Final simulated loss
+#             train_accuracy=0.95  # Final simulated accuracy
+#         )
+#         update_drone_model(db, model_id, final_update)
+        
+#         await websocket.send_json({
+#             "done": True,
+#             "message": "Training completed!",
+#             "final_loss": 0.1,
+#             "final_accuracy": 0.95
+#         })
+        
+#     except WebSocketDisconnect:
+#         print("Client disconnected")
+#     except Exception as e:
+#         await websocket.send_json({"error": str(e), "done": True})
+#     finally:
+#         await websocket.close()
 
 @app.websocket("/ws/train")
 async def train_model(websocket: WebSocket):
@@ -150,8 +202,6 @@ async def train_model(websocket: WebSocket):
         await websocket.send_json({"error": str(e), "done": True})
         await websocket.close()
 
-
-# Run the server
-if __name__ == "__main__":  # Fix: __name__ not _name_
+if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=True)

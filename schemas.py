@@ -1,31 +1,42 @@
 from pydantic import BaseModel
+from typing import List, Optional
+from models import TrainingStatus
 
-class UserCreate(BaseModel):
+class UserBase(BaseModel):
     username: str
-    password: str
-    email: str
 
-class User(BaseModel):
+class UserCreate(UserBase):
+    pass
+
+class User(UserBase):
     id: int
-    username: str
-    email: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
-class ModelCreate(BaseModel):
+class DroneModelBase(BaseModel):
     title: str
     description: str
-    code: str
-    epochs: int
+    training_epochs: int
 
-class Model(BaseModel):
+class DroneModelCreate(DroneModelBase):
+    pass
+
+class DroneModelUpdate(BaseModel):
+    train_loss: Optional[float] = None
+    train_accuracy: Optional[float] = None
+    status: Optional[TrainingStatus] = None
+
+class DroneModel(DroneModelBase):
     id: int
-    title: str
-    description: str
-    code: str
-    epochs: int
     user_id: int
+    drone_id: str
+    status: TrainingStatus
+    train_loss: Optional[float] = None
+    train_accuracy: Optional[float] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
+
+class DroneModelList(BaseModel):
+    models: List[DroneModel]
