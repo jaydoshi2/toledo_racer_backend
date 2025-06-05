@@ -49,3 +49,6 @@ def get_user_models(db: Session, user_id: int) -> List[models.UserDroneModel]:
 
 def get_model_by_id(db: Session, model_id: int) -> Optional[models.UserDroneModel]:
     return db.query(models.UserDroneModel).filter(models.UserDroneModel.id == model_id).first()
+
+def get_model_by_drone_id(db: Session, drone_id: str) -> Optional[models.UserDroneModel]:
+    return db.query(models.UserDroneModel).filter(models.UserDroneModel.drone_id == drone_id).first()
