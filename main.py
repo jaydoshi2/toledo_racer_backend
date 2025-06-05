@@ -56,10 +56,15 @@ def get_db():
     finally:
         db.close()
 
-# Create new user
 @app.post("/users/", response_model=User)
 def create_new_user(user: UserCreate, db: Session = Depends(get_db)):
+    # Check if username already exists
+    existing_user = get_user_by_username(db, user.username)
+    if existing_user:
+        print(f"Username {user.username} already exists")
+        raise HTTPException(status_code=400, detail="Username already exists")
     try:
+        print(f"Creating user {user.username}")
         return create_user(db=db, user=user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
