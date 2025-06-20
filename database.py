@@ -1,8 +1,13 @@
+import os
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-DATABASE_URL = "postgresql://neondb_owner:q4LlY8NkwmEP@ep-summer-unit-a5earqnh-pooler.us-east-2.aws.neon.tech/sem4_Gp_Project?sslmode=require"
+# Load environment variables from .env file
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Create the SQLAlchemy engine with pool settings for serverless compatibility
 engine = create_engine(

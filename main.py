@@ -20,7 +20,6 @@ from typing import List
 
 # Create database tables
 models.Base.metadata.create_all(bind=engine)
-
 app = FastAPI()
 
 
@@ -42,7 +41,7 @@ def generate_data():
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+     allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -77,13 +76,6 @@ def get_user(username: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return db_user
 
-# Create new drone model
-@app.post("/users/{username}/models/", response_model=DroneModel)
-def create_new_drone_model(username: str, model: DroneModelCreate, db: Session = Depends(get_db)):
-    db_user = get_user_by_username(db, username=username)
-    if db_user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return create_drone_model(db=db, user_id=db_user.id, model=model)
 
 # Update model status and metrics
 # @app.put("/models/{model_id}", response_model=DroneModel)
@@ -93,7 +85,7 @@ def create_new_drone_model(username: str, model: DroneModelCreate, db: Session =
 #         raise HTTPException(status_code=404, detail="Model not found")
 #     return db_model
 
-# # Get all models for a user
+# # Get all models for a usergive me the 
 # @app.get("/users/{username}/models/", response_model=List[DroneModel])
 # def get_models(username: str, db: Session = Depends(get_db)):
 #     db_user = get_user_by_username(db, username=username)
@@ -112,7 +104,7 @@ def create_new_drone_model(username: str, model: DroneModelCreate, db: Session =
 
 # # WebSocket endpoint for training updates
 # @app.websocket("/ws/train/{model_id}")
-# async def train_model(websocket: WebSocket, model_id: int, db: Session = Depends(get_db)):
+# async def train_model(websocket: WebSocket, mraceback (most recent call last):
 #     print(f"Training model {model_id}")
 #     await websocket.accept()
     
@@ -156,7 +148,7 @@ def create_new_drone_model(username: str, model: DroneModelCreate, db: Session =
         
 #         await websocket.send_json({
 #             "done": True,
-#             "message": "Training completed!",
+#             "message": "Training completed!",give me the 
 #             "final_loss": 0.1,
 #             "final_accuracy": 0.95
 #         })
@@ -188,8 +180,7 @@ async def train_model(websocket: WebSocket):
             optimizer.step()
 
             predictions = (outputs > 0.5).float()
-            accuracy = (predictions == y).float().mean().
-            item()
+            accuracy = (predictions == y).float().mean().item()
 
             metrics = {
                 "epoch": epoch + 1,
