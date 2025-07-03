@@ -16,6 +16,7 @@ from crud import (
     update_drone_model, get_user_models, get_model_by_id,
     get_model_by_drone_id
 )
+from crud import get_user_model_by_username_and_drone_id
 from typing import List
 import threading
 import rclpy
@@ -115,6 +116,42 @@ def get_user(username: str, db: Session = Depends(get_db)):
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return db_user
+
+
+@app.get("/users/{username}/drone-models/", response_model=List[DroneModel])
+def get_all_models_for_user(username: str, db: Session = Depends(get_db)):
+    user = get_user_by_username(db, username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    models_list = get_user_models(db, user.id)
+    return models_list
+
+# Create drone model for user
+@app.post("/users/{username}/drone-models/", response_model=DroneModel)
+def create_drone_model_for_user(username: str, model: DroneModelCreate, db: Session = Depends(get_db)):
+    user = get_user_by_username(db, username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return create_drone_model(db, user_id=user.id, model=model)
+
+
+# Update drone model metrics (train_loss, train_accuracy, status)
+@app.put("/drone-models/{model_id}/", response_model=DroneModel)
+def update_drone_model_metrics(model_id: int, update_data: DroneModelUpdate, db: Session = Depends(get_db)):
+    updated_model = update_drone_model(db, model_id, update_data)
+    if not updated_model:
+        raise HTTPException(status_code=404, detail="Drone model not found")
+    return updated_model
+
+
+# Fetch user drone model by username and drone_id
+@app.get("/users/{username}/drone-models/{drone_id}", response_model=DroneModel)
+def get_user_drone_model(username: str, drone_id: str, db: Session = Depends(get_db)):
+    db_model = get_user_model_by_username_and_drone_id(db, username, drone_id)
+    if not db_model:
+        raise HTTPException(status_code=404, detail="Model not found for given user and drone ID")
+    return db_model
 
 
 @app.websocket("/ws/train")
