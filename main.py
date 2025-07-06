@@ -1,5 +1,6 @@
 from fastapi import FastAPI, WebSocket, Depends, HTTPException, status, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import numpy as np
 import torch
@@ -25,11 +26,22 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from std_msgs.msg import String
 import uvicorn
-
+from typing import Dict, Optional
+import logging
+import threading
+import subprocess
+import psutil
+import os
+import time
+import json
+import cv2
+import base64
+from pathlib import Path
 # Create database tables
 models.Base.metadata.create_all(bind=engine)
 app = FastAPI()
-
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class SimpleModel(nn.Module):
             def __init__(self):
@@ -38,7 +50,6 @@ class SimpleModel(nn.Module):
         
             def forward(self, x):
                 return torch.sigmoid(self.fc(x))
-        
 def generate_data():
             np.random.seed(42)
             X = np.random.randn(100, 2)
@@ -54,6 +65,132 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+active_connections: Dict[str, WebSocket] = {}
+active_processes: Dict[str, subprocess.Popen] = {}
+
+
+class GazeboManager:
+    def __init__(self):
+        self.processes = {}  # Store processes per model
+        self.px4_path = Path("PX4/PX4-Autopilot")  # Adjust path as needed
+        self.qgroundcontrol_path = Path("./QGroundControl-x86_64.AppImage")
+        
+    async def start_gazebo(self, model_id: str, username: str):
+        """Start Gazebo simulation for specific model"""
+        try:
+            logger.info(f"Starting Gazebo for model {model_id}, user {username}")
+            
+            # Check if PX4 directory exists
+            if not self.px4_path.exists():
+                return False, "PX4-Autopilot directory not found"
+            
+            # Change to PX4 directory
+            original_cwd = os.getcwd()
+            os.chdir(self.px4_path)
+            
+            # Start PX4 SITL with Gazebo
+            cmd = ["make", "px4_sitl", "gz_x500"]
+            logger.info(f"Executing command: {' '.join(cmd)}")
+            
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=os.environ.copy()
+            )
+            
+            # Store process reference
+            key = f"{username}_{model_id}"
+            self.processes[key] = process
+            
+            # Wait for startup
+            await asyncio.sleep(10)
+            
+            # Check if process is still running
+            if process.poll() is None:
+                logger.info(f"Gazebo started successfully for {key}")
+                
+                # Start QGroundControl in background
+                await self.start_qgroundcontrol(model_id, username)
+                
+                # Return to original directory
+                os.chdir(original_cwd)
+                return True, "Gazebo and QGroundControl started successfully"
+            else:
+                stdout, stderr = process.communicate()
+                logger.error(f"Gazebo failed to start: {stderr}")
+                os.chdir(original_cwd)
+                return False, f"Gazebo failed to start: {stderr}"
+                
+        except Exception as e:
+            logger.error(f"Error starting Gazebo: {e}")
+            os.chdir(original_cwd)
+            return False, f"Error starting Gazebo: {str(e)}"
+    
+    async def start_qgroundcontrol(self, model_id: str, username: str):
+        """Start QGroundControl"""
+        try:
+            if self.qgroundcontrol_path.exists():
+                # Make executable
+                os.chmod(self.qgroundcontrol_path, 0o755)
+                
+                # Start QGroundControl
+                qgc_process = subprocess.Popen(
+                    [str(self.qgroundcontrol_path)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                
+                key = f"{username}_{model_id}_qgc"
+                self.processes[key] = qgc_process
+                logger.info(f"QGroundControl started for {username}_{model_id}")
+                
+        except Exception as e:
+            logger.error(f"Error starting QGroundControl: {e}")
+    
+    def stop_gazebo(self, model_id: str, username: str):
+        """Stop Gazebo simulation"""
+        key = f"{username}_{model_id}"
+        qgc_key = f"{username}_{model_id}_qgc"
+        
+        # Stop Gazebo
+        if key in self.processes:
+            process = self.processes[key]
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            del self.processes[key]
+            logger.info(f"Stopped Gazebo for {key}")
+        
+        # Stop QGroundControl
+        if qgc_key in self.processes:
+            process = self.processes[qgc_key]
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            del self.processes[qgc_key]
+            logger.info(f"Stopped QGroundControl for {qgc_key}")
+    
+    def get_status(self, model_id: str, username: str) -> str:
+        """Get simulation status"""
+        key = f"{username}_{model_id}"
+        if key in self.processes:
+            process = self.processes[key]
+            if process.poll() is None:
+                return "training"
+            else:
+                return "failed"
+        return "idle"
+
+# Initialize Gazebo Manager
+gazebo_manager = GazeboManager()
+
 
 # Dependency
 def get_db():
@@ -199,6 +336,92 @@ async def train_model(websocket: WebSocket):
         await websocket.send_json({"error": str(e), "done": True})
         await websocket.close()
 
+@app.post("/users/{username}/drone-models/{model_id}/start-simulation")
+async def start_simulation(username: str, model_id: str):
+    """Start Gazebo simulation for specific model"""
+    try:
+        logger.info(f"Starting simulation for user {username}, model {model_id}")
+         
+        # Check if simulation is already running
+        current_status = gazebo_manager.get_status(model_id, username)
+        if current_status == "training":
+            return {"status": "already_running", "message": "Simulation already running"}
+        
+        success, message = await gazebo_manager.start_gazebo(model_id, username)
+        
+        if success:
+            # Notify connected WebSocket clients
+            key = f"{username}_{model_id}"
+            if key in active_connections:
+                await active_connections[key].send_json({
+                    "type": "simulation_status",
+                    "status": "training",
+                    "message": message
+                })
+            
+            return {"status": "success", "message": message}
+        else:
+            return {"status": "error", "message": message}
+    except Exception as e:
+        logger.error(f"Error starting simulation: {e}")
+        return {"status": "error", "message": str(e)}
+    
+@app.post("/users/{username}/drone-models/{model_id}/stop-simulation")
+async def stop_simulation(username: str, model_id: str):
+    """Stop Gazebo simulation"""
+    try:
+        gazebo_manager.stop_gazebo(model_id, username)
+        
+        # Notify connected WebSocket clients
+        key = f"{username}_{model_id}"
+        if key in active_connections:
+            await active_connections[key].send_json({
+                "type": "simulation_status",
+                "status": "idle",
+                "message": "Simulation stopped"
+            })
+        
+        return {"status": "success", "message": "Simulation stopped"}
+        
+    except Exception as e:
+        logger.error(f"Error stopping simulation: {e}")
+        return {"status": "error", "message": str(e)}    
+@app.get("/gazebo-stream/{model_id}")
+async def gazebo_stream_endpoint(model_id: str, username: str = "default"):
+    """Stream Gazebo simulation view"""
+    # This is a placeholder - you'll need to implement actual Gazebo streaming
+    # You can use OpenCV to capture the Gazebo window or use gstreamer
+    
+    def generate_stream():
+        while True:
+            # Placeholder for actual Gazebo capture
+            # You would capture the Gazebo window here
+            frame = create_placeholder_frame(f"Gazebo Stream for Model {model_id}")
+            
+            # Convert frame to JPEG
+            _, buffer = cv2.imencode('.jpg', frame)
+            frame_bytes = buffer.tobytes()
+            
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            
+            time.sleep(0.033)  # ~30 FPS
+    
+    return StreamingResponse(generate_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+def create_placeholder_frame(text: str):
+    """Create a placeholder frame with text"""
+    import numpy as np
+    
+    # Create a black frame
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    
+    # Add text
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(frame, text, (50, 240), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(frame, "Gazebo simulation would appear here", (50, 280), font, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
+    
+    return frame
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=True)
